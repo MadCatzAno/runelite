@@ -24,10 +24,8 @@
  */
 package net.runelite.client.plugins.cannon;
 
-import com.google.common.eventbus.Subscribe;
 import com.google.inject.Provides;
 import java.awt.Color;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -38,6 +36,9 @@ import net.runelite.api.AnimationID;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameObject;
+import net.runelite.api.GameState;
+import net.runelite.api.InventoryID;
+import net.runelite.api.Item;
 import net.runelite.api.ItemID;
 import static net.runelite.api.ObjectID.CANNON_BASE;
 import net.runelite.api.Player;
@@ -46,17 +47,19 @@ import static net.runelite.api.ProjectileID.CANNONBALL;
 import static net.runelite.api.ProjectileID.GRANITE_CANNONBALL;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
-import net.runelite.api.events.ConfigChanged;
 import net.runelite.api.events.GameObjectSpawned;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.ProjectileMoved;
 import net.runelite.client.Notifier;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.task.Schedule;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 
@@ -68,10 +71,11 @@ import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 public class CannonPlugin extends Plugin
 {
 	private static final Pattern NUMBER_PATTERN = Pattern.compile("([0-9]+)");
-	private static final int MAX_CBALLS = 30;
+	static final int MAX_CBALLS = 30;
 
 	private CannonCounter counter;
 	private boolean skipProjectileCheckThisTick;
+	private boolean cannonBallNotificationSent;
 
 	@Getter
 	private int cballsLeft;
@@ -131,12 +135,66 @@ public class CannonPlugin extends Plugin
 	@Override
 	protected void shutDown() throws Exception
 	{
+		cannonSpotOverlay.setHidden(true);
 		overlayManager.remove(cannonOverlay);
 		overlayManager.remove(cannonSpotOverlay);
 		cannonPlaced = false;
 		cannonPosition = null;
+		cannonBallNotificationSent = false;
 		cballsLeft = 0;
 		removeCounter();
+		skipProjectileCheckThisTick = false;
+		spotPoints.clear();
+	}
+
+	@Subscribe
+	public void onItemContainerChanged(ItemContainerChanged event)
+	{
+		if (event.getItemContainer() != client.getItemContainer(InventoryID.INVENTORY))
+		{
+			return;
+		}
+
+		boolean hasBase = false;
+		boolean hasStand = false;
+		boolean hasBarrels = false;
+		boolean hasFurnace = false;
+		boolean hasAll = false;
+
+		if (!cannonPlaced)
+		{
+			for (Item item : event.getItemContainer().getItems())
+			{
+				if (item == null)
+				{
+					continue;
+				}
+
+				switch (item.getId())
+				{
+					case ItemID.CANNON_BASE:
+						hasBase = true;
+						break;
+					case ItemID.CANNON_STAND:
+						hasStand = true;
+						break;
+					case ItemID.CANNON_BARRELS:
+						hasBarrels = true;
+						break;
+					case ItemID.CANNON_FURNACE:
+						hasFurnace = true;
+						break;
+				}
+
+				if (hasBase && hasStand && hasBarrels && hasFurnace)
+				{
+					hasAll = true;
+					break;
+				}
+			}
+		}
+
+		cannonSpotOverlay.setHidden(!hasAll);
 	}
 
 	@Subscribe
@@ -152,20 +210,17 @@ public class CannonPlugin extends Plugin
 			{
 				if (cannonPlaced)
 				{
-					clientThread.invokeLater(this::addCounter);
+					clientThread.invoke(this::addCounter);
 				}
 			}
 		}
 
 	}
 
-	@Schedule(
-		period = 1,
-		unit = ChronoUnit.SECONDS
-	)
-	public void checkSpots()
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged gameStateChanged)
 	{
-		if (!config.showCannonSpots())
+		if (gameStateChanged.getGameState() != GameState.LOGGED_IN)
 		{
 			return;
 		}
@@ -173,12 +228,10 @@ public class CannonPlugin extends Plugin
 		spotPoints.clear();
 		for (WorldPoint spot : CannonSpots.getCannonSpots())
 		{
-			if (spot.getPlane() != client.getPlane() || !spot.isInScene(client))
+			if (WorldPoint.isInScene(client, spot.getX(), spot.getY()))
 			{
-				continue;
+				spotPoints.add(spot);
 			}
-
-			spotPoints.add(spot);
 		}
 	}
 
@@ -219,6 +272,12 @@ public class CannonPlugin extends Plugin
 				if (!skipProjectileCheckThisTick)
 				{
 					cballsLeft--;
+
+					if (config.showCannonNotifications() && !cannonBallNotificationSent && cballsLeft > 0 && config.lowWarningThreshold() >= cballsLeft)
+					{
+						notifier.notify(String.format("Your cannon has %d cannon balls remaining!", cballsLeft));
+						cannonBallNotificationSent = true;
+					}
 				}
 			}
 		}
@@ -227,7 +286,7 @@ public class CannonPlugin extends Plugin
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (event.getType() != ChatMessageType.FILTERED && event.getType() != ChatMessageType.SERVER)
+		if (event.getType() != ChatMessageType.SPAM && event.getType() != ChatMessageType.GAMEMESSAGE)
 		{
 			return;
 		}
@@ -239,7 +298,8 @@ public class CannonPlugin extends Plugin
 			cballsLeft = 0;
 		}
 
-		if (event.getMessage().contains("You pick up the cannon"))
+		if (event.getMessage().contains("You pick up the cannon")
+			|| event.getMessage().contains("Your cannon has decayed. Speak to Nulodion to get a new one!"))
 		{
 			cannonPlaced = false;
 			cballsLeft = 0;
@@ -281,6 +341,8 @@ public class CannonPlugin extends Plugin
 					cballsLeft++;
 				}
 			}
+
+			cannonBallNotificationSent = false;
 		}
 
 		if (event.getMessage().contains("Your cannon is out of ammo!"))
@@ -292,7 +354,7 @@ public class CannonPlugin extends Plugin
 			// extra check is a good idea.
 			cballsLeft = 0;
 
-			if (config.showEmptyCannonNotification())
+			if (config.showCannonNotifications())
 			{
 				notifier.notify("Your cannon is out of ammo!");
 			}

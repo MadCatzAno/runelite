@@ -24,7 +24,6 @@
  */
 package net.runelite.client.plugins.hunter;
 
-import com.google.common.eventbus.Subscribe;
 import com.google.inject.Provides;
 import java.time.Instant;
 import java.util.HashMap;
@@ -41,11 +40,12 @@ import net.runelite.api.Tile;
 import net.runelite.api.coords.Direction;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.events.ConfigChanged;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameTick;
 import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
@@ -128,7 +128,7 @@ public class HunterPlugin extends Plugin
 
 			case ObjectID.MONKEY_TRAP: // Maniacal monkey trap placed
 				// If player is right next to "object" trap assume that player placed the trap
-				if (localPlayer.getWorldLocation().distanceTo(trapLocation) <= 1)
+				if (localPlayer.getWorldLocation().distanceTo(trapLocation) <= 2)
 				{
 					log.debug("Trap placed by \"{}\" on {}", localPlayer.getName(), trapLocation);
 					traps.put(trapLocation, new HunterTrap(gameObject));
@@ -189,6 +189,7 @@ public class HunterPlugin extends Plugin
 			case ObjectID.SHAKING_BOX: // Black chinchompa caught
 			case ObjectID.SHAKING_BOX_9382: // Grey chinchompa caught
 			case ObjectID.SHAKING_BOX_9383: // Red chinchompa caught
+			case ObjectID.SHAKING_BOX_9384: // Ferret caught
 			case ObjectID.BOULDER_20648: // Prickly kebbit caught
 			case ObjectID.BOULDER_20649: // Sabre-tooth kebbit caught
 			case ObjectID.BOULDER_20650: // Barb-tailed kebbit caught
@@ -259,6 +260,11 @@ public class HunterPlugin extends Plugin
 			case ObjectID.BOX_TRAP_9387:
 			case ObjectID.BOX_TRAP_9388:
 
+			// Ferret shaking box
+			case ObjectID.BOX_TRAP_9394:
+			case ObjectID.BOX_TRAP_9396:
+			case ObjectID.BOX_TRAP_9397:
+
 			// Bird traps
 			case ObjectID.BIRD_SNARE_9346:
 			case ObjectID.BIRD_SNARE_9347:
@@ -306,7 +312,7 @@ public class HunterPlugin extends Plugin
 	{
 		// Check if all traps are still there, and remove the ones that are not.
 		Iterator<Map.Entry<WorldPoint, HunterTrap>> it = traps.entrySet().iterator();
-		Tile[][][] tiles = client.getRegion().getTiles();
+		Tile[][][] tiles = client.getScene().getTiles();
 
 		Instant expire = Instant.now().minus(HunterTrap.TRAP_TIME.multipliedBy(2));
 
@@ -330,7 +336,7 @@ public class HunterPlugin extends Plugin
 				continue;
 			}
 
-			Tile tile = tiles[world.getPlane()][local.getRegionX()][local.getRegionY()];
+			Tile tile = tiles[world.getPlane()][local.getSceneX()][local.getSceneY()];
 			GameObject[] objects = tile.getGameObjects();
 
 			boolean containsBoulder = false;

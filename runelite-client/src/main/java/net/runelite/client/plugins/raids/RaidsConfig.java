@@ -27,6 +27,8 @@ package net.runelite.client.plugins.raids;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Keybind;
+import net.runelite.client.util.ImageUploadStyle;
 
 @ConfigGroup("raids")
 public interface RaidsConfig extends Config
@@ -77,6 +79,28 @@ public interface RaidsConfig extends Config
 
 	@ConfigItem(
 		position = 4,
+		keyName = "scoutOverlayInRaid",
+		name = "Show scout overlay inside raid",
+		description = "Keep the overlay active while inside raid"
+	)
+	default boolean scoutOverlayInRaid()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		position = 5,
+		keyName = "ccDisplay",
+		name = "FC and World in scout overlay",
+		description = "Display current Friends Chat and World in scouting overlay"
+	)
+	default boolean fcDisplay()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		position = 6,
 		keyName = "whitelistedRooms",
 		name = "Whitelisted rooms",
 		description = "Display whitelisted rooms in green on the overlay. Separate with comma (full name)"
@@ -87,7 +111,7 @@ public interface RaidsConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 5,
+		position = 7,
 		keyName = "blacklistedRooms",
 		name = "Blacklisted rooms",
 		description = "Display blacklisted rooms in red on the overlay. Separate with comma (full name)"
@@ -98,7 +122,7 @@ public interface RaidsConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 6,
+		position = 8,
 		keyName = "enableRotationWhitelist",
 		name = "Enable rotation whitelist",
 		description = "Enable the rotation whitelist"
@@ -109,10 +133,10 @@ public interface RaidsConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 7,
+		position = 9,
 		keyName = "whitelistedRotations",
 		name = "Whitelisted rotations",
-		description = "Warn when boss rotation doesn't match a whitelisted one. Add rotations like [tekton, muttadile, guardians]"
+		description = "Warn when boss rotation doesn't match a whitelisted one. Add rotations like: tekton, muttadiles, guardians - each rotation on its own line"
 	)
 	default String whitelistedRotations()
 	{
@@ -120,7 +144,7 @@ public interface RaidsConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 8,
+		position = 10,
 		keyName = "enableLayoutWhitelist",
 		name = "Enable layout whitelist",
 		description = "Enable the layout whitelist"
@@ -131,7 +155,7 @@ public interface RaidsConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 9,
+		position = 11,
 		keyName = "whitelistedLayouts",
 		name = "Whitelisted layouts",
 		description = "Warn when layout doesn't match a whitelisted one. Add layouts like CFSCPPCSCF separated with comma"
@@ -139,5 +163,38 @@ public interface RaidsConfig extends Config
 	default String whitelistedLayouts()
 	{
 		return "";
+	}
+
+	@ConfigItem(
+		position = 12,
+		keyName = "layoutMessage",
+		name = "Send raid layout message when entering raid",
+		description = "Sends game message with raid layout on entering new raid"
+	)
+	default boolean layoutMessage()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		position = 13,
+		keyName = "screenshotHotkey",
+		name = "Scouter screenshot hotkey",
+		description = "Hotkey used to screenshot the scouting overlay"
+	)
+	default Keybind screenshotHotkey()
+	{
+		return Keybind.NOT_SET;
+	}
+
+	@ConfigItem(
+		position = 14,
+		keyName = "uploadScreenshot",
+		name = "Upload scouting screenshot",
+		description = "Uploads the scouting screenshot to Imgur or the clipboard"
+	)
+	default ImageUploadStyle uploadScreenshot()
+	{
+		return ImageUploadStyle.CLIPBOARD;
 	}
 }

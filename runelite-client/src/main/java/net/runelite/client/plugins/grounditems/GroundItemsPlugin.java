@@ -25,87 +25,101 @@
  */
 package net.runelite.client.plugins.grounditems;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.LoadingCache;
-import com.google.common.collect.Lists;
-import com.google.common.eventbus.Subscribe;
+import com.google.common.collect.EvictingQueue;
+import com.google.common.collect.ImmutableList;
 import com.google.inject.Provides;
 import java.awt.Color;
 import java.awt.Rectangle;
+import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
+import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Queue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
-import lombok.extern.slf4j.Slf4j;
+import lombok.Value;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.ItemID;
-import net.runelite.api.ItemLayer;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
-import net.runelite.api.Node;
 import net.runelite.api.Player;
-import net.runelite.api.Region;
 import net.runelite.api.Tile;
-import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.events.ConfigChanged;
+import net.runelite.api.TileItem;
+import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.FocusChanged;
 import net.runelite.api.events.GameStateChanged;
-import net.runelite.api.events.ItemLayerChanged;
+import net.runelite.api.events.ItemDespawned;
+import net.runelite.api.events.ItemQuantityChanged;
+import net.runelite.api.events.ItemSpawned;
 import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.NpcLootReceived;
+import net.runelite.client.events.PlayerLootReceived;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.game.ItemStack;
 import net.runelite.client.input.KeyManager;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.grounditems.config.HighlightTier;
 import static net.runelite.client.plugins.grounditems.config.ItemHighlightMode.OVERLAY;
 import net.runelite.client.plugins.grounditems.config.MenuHighlightMode;
 import static net.runelite.client.plugins.grounditems.config.MenuHighlightMode.BOTH;
 import static net.runelite.client.plugins.grounditems.config.MenuHighlightMode.NAME;
 import static net.runelite.client.plugins.grounditems.config.MenuHighlightMode.OPTION;
 import net.runelite.client.ui.overlay.OverlayManager;
-import net.runelite.http.api.item.ItemPrice;
+import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.QuantityFormatter;
+import net.runelite.client.util.Text;
 
 @PluginDescriptor(
 	name = "Ground Items",
 	description = "Highlight ground items and/or show price information",
 	tags = {"grand", "exchange", "high", "alchemy", "prices", "highlight", "overlay"}
 )
-@Slf4j
 public class GroundItemsPlugin extends Plugin
 {
-	private static final Splitter COMMA_SPLITTER = Splitter
-		.on(",")
-		.omitEmptyStrings()
-		.trimResults();
+	@Value
+	static class PriceHighlight
+	{
+		private final int price;
+		private final Color color;
+	}
 
-	private static final Joiner COMMA_JOINER = Joiner.on(",").skipNulls();
-	//Size of one region
-	private static final int REGION_SIZE = 104;
-	// The max distance in tiles between the player and the item.
-	private static final int MAX_RANGE = 18;
-	// Used when getting High Alchemy value - multiplied by general store price.
-	private static final float HIGH_ALCHEMY_CONSTANT = 0.6f;
+	// The game won't send anything higher than this value to the plugin -
+	// so we replace any item quantity higher with "Lots" instead.
+	static final int MAX_QUANTITY = 65535;
 	// ItemID for coins
 	private static final int COINS = ItemID.COINS_995;
+	// Ground item menu options
+	private static final int FIRST_OPTION = MenuAction.GROUND_ITEM_FIRST_OPTION.getId();
+	private static final int SECOND_OPTION = MenuAction.GROUND_ITEM_SECOND_OPTION.getId();
+	private static final int THIRD_OPTION = MenuAction.GROUND_ITEM_THIRD_OPTION.getId(); // this is Take
+	private static final int FOURTH_OPTION = MenuAction.GROUND_ITEM_FOURTH_OPTION.getId();
+	private static final int FIFTH_OPTION = MenuAction.GROUND_ITEM_FIFTH_OPTION.getId();
+	private static final int EXAMINE_ITEM = MenuAction.EXAMINE_ITEM_GROUND.getId();
+	private static final int CAST_ON_ITEM = MenuAction.SPELL_CAST_ON_GROUND_ITEM.getId();
+
+	private static final String TELEGRAB_TEXT = ColorUtil.wrapWithColorTag("Telekinetic Grab", Color.GREEN) + ColorUtil.prependColorTag(" -> ", Color.WHITE);
 
 	@Getter(AccessLevel.PACKAGE)
 	@Setter(AccessLevel.PACKAGE)
@@ -123,9 +137,12 @@ public class GroundItemsPlugin extends Plugin
 	@Setter(AccessLevel.PACKAGE)
 	private boolean hotKeyPressed;
 
+	@Getter(AccessLevel.PACKAGE)
+	@Setter(AccessLevel.PACKAGE)
+	private boolean hideAll;
+
 	private List<String> hiddenItemList = new CopyOnWriteArrayList<>();
 	private List<String> highlightedItemsList = new CopyOnWriteArrayList<>();
-	private boolean dirty;
 
 	@Inject
 	private GroundItemInputListener inputListener;
@@ -151,24 +168,18 @@ public class GroundItemsPlugin extends Plugin
 	@Inject
 	private GroundItemsOverlay overlay;
 
+	@Inject
+	private Notifier notifier;
+
+	@Inject
+	private ScheduledExecutorService executor;
+
 	@Getter
 	private final Map<GroundItem.GroundItemKey, GroundItem> collectedGroundItems = new LinkedHashMap<>();
-	private final List<GroundItem> groundItems = new ArrayList<>();
-	private final Map<Integer, Color> priceChecks = new LinkedHashMap<>();
-	private LoadingCache<String, Boolean> highlightedItems;
-	private LoadingCache<String, Boolean> hiddenItems;
-
-	// Collects similar ground items
-	private final Collector<GroundItem, ?, Map<GroundItem.GroundItemKey, GroundItem>> groundItemMapCollector = Collectors
-		.toMap
-			((item) -> new GroundItem.GroundItemKey(item.getItemId(), item.getLocation()), Function.identity(), (a, b) ->
-				{
-					b.setHaPrice(a.getHaPrice() + b.getHaPrice());
-					b.setGePrice(a.getGePrice() + b.getGePrice());
-					b.setQuantity(a.getQuantity() + b.getQuantity());
-					return b;
-				},
-				() -> collectedGroundItems);
+	private List<PriceHighlight> priceChecks = ImmutableList.of();
+	private LoadingCache<NamedQuantity, Boolean> highlightedItems;
+	private LoadingCache<NamedQuantity, Boolean> hiddenItems;
+	private final Queue<Integer> droppedItemQueue = EvictingQueue.create(16); // recently dropped items
 
 	@Provides
 	GroundItemsConfig provideConfig(ConfigManager configManager)
@@ -180,24 +191,24 @@ public class GroundItemsPlugin extends Plugin
 	protected void startUp()
 	{
 		overlayManager.add(overlay);
-		reset();
 		mouseManager.registerMouseListener(inputListener);
 		keyManager.registerKeyListener(inputListener);
+		executor.execute(this::reset);
 	}
 
 	@Override
-	protected void shutDown() throws Exception
+	protected void shutDown()
 	{
 		overlayManager.remove(overlay);
 		mouseManager.unregisterMouseListener(inputListener);
 		keyManager.unregisterKeyListener(inputListener);
-		groundItems.clear();
 		highlightedItems.invalidateAll();
 		highlightedItems = null;
 		hiddenItems.invalidateAll();
 		hiddenItems = null;
 		hiddenItemList = null;
 		highlightedItemsList = null;
+		collectedGroundItems.clear();
 	}
 
 	@Subscribe
@@ -205,100 +216,174 @@ public class GroundItemsPlugin extends Plugin
 	{
 		if (event.getGroup().equals("grounditems"))
 		{
-			reset();
+			executor.execute(this::reset);
 		}
 	}
 
 	@Subscribe
 	public void onGameStateChanged(final GameStateChanged event)
 	{
-		if (event.getGameState() == GameState.LOGGED_IN)
+		if (event.getGameState() == GameState.LOADING)
 		{
-			dirty = true;
+			collectedGroundItems.clear();
 		}
 	}
 
 	@Subscribe
-	public void onItemLayerChanged(ItemLayerChanged event)
+	public void onItemSpawned(ItemSpawned itemSpawned)
 	{
-		dirty = true;
+		TileItem item = itemSpawned.getItem();
+		Tile tile = itemSpawned.getTile();
+
+		GroundItem groundItem = buildGroundItem(tile, item);
+
+		GroundItem.GroundItemKey groundItemKey = new GroundItem.GroundItemKey(item.getId(), tile.getWorldLocation());
+		GroundItem existing = collectedGroundItems.putIfAbsent(groundItemKey, groundItem);
+		if (existing != null)
+		{
+			existing.setQuantity(existing.getQuantity() + groundItem.getQuantity());
+			// The spawn time remains set at the oldest spawn
+		}
+
+		if (!config.onlyShowLoot())
+		{
+			notifyHighlightedItem(groundItem);
+		}
 	}
 
-	void checkItems()
+	@Subscribe
+	public void onItemDespawned(ItemDespawned itemDespawned)
 	{
-		final Player player = client.getLocalPlayer();
+		TileItem item = itemDespawned.getItem();
+		Tile tile = itemDespawned.getTile();
 
-		if (!dirty || player == null || client.getViewportWidget() == null)
+		GroundItem.GroundItemKey groundItemKey = new GroundItem.GroundItemKey(item.getId(), tile.getWorldLocation());
+		GroundItem groundItem = collectedGroundItems.get(groundItemKey);
+		if (groundItem == null)
 		{
 			return;
 		}
 
-		dirty = false;
-
-		final Region region = client.getRegion();
-		final Tile[][][] tiles = region.getTiles();
-		final int z = client.getPlane();
-		final LocalPoint from = player.getLocalLocation();
-
-		final int lowerX = Math.max(0, from.getRegionX() - MAX_RANGE);
-		final int lowerY = Math.max(0, from.getRegionY() - MAX_RANGE);
-
-		final int upperX = Math.min(from.getRegionX() + MAX_RANGE, REGION_SIZE - 1);
-		final int upperY = Math.min(from.getRegionY() + MAX_RANGE, REGION_SIZE - 1);
-
-		groundItems.clear();
-
-		for (int x = lowerX; x <= upperX; ++x)
+		if (groundItem.getQuantity() <= item.getQuantity())
 		{
-			for (int y = lowerY; y <= upperY; ++y)
+			collectedGroundItems.remove(groundItemKey);
+		}
+		else
+		{
+			groundItem.setQuantity(groundItem.getQuantity() - item.getQuantity());
+			// When picking up an item when multiple stacks appear on the ground,
+			// it is not known which item is picked up, so we invalidate the spawn
+			// time
+			groundItem.setSpawnTime(null);
+		}
+	}
+
+	@Subscribe
+	public void onItemQuantityChanged(ItemQuantityChanged itemQuantityChanged)
+	{
+		TileItem item = itemQuantityChanged.getItem();
+		Tile tile = itemQuantityChanged.getTile();
+		int oldQuantity = itemQuantityChanged.getOldQuantity();
+		int newQuantity = itemQuantityChanged.getNewQuantity();
+
+		int diff = newQuantity - oldQuantity;
+		GroundItem.GroundItemKey groundItemKey = new GroundItem.GroundItemKey(item.getId(), tile.getWorldLocation());
+		GroundItem groundItem = collectedGroundItems.get(groundItemKey);
+		if (groundItem != null)
+		{
+			groundItem.setQuantity(groundItem.getQuantity() + diff);
+		}
+	}
+
+	@Subscribe
+	public void onNpcLootReceived(NpcLootReceived npcLootReceived)
+	{
+		Collection<ItemStack> items = npcLootReceived.getItems();
+		lootReceived(items, LootType.PVM);
+	}
+
+	@Subscribe
+	public void onPlayerLootReceived(PlayerLootReceived playerLootReceived)
+	{
+		Collection<ItemStack> items = playerLootReceived.getItems();
+		lootReceived(items, LootType.PVP);
+	}
+
+	@Subscribe
+	public void onClientTick(ClientTick event)
+	{
+		if (!config.collapseEntries())
+		{
+			return;
+		}
+
+		final MenuEntry[] menuEntries = client.getMenuEntries();
+		final List<MenuEntryWithCount> newEntries = new ArrayList<>(menuEntries.length);
+
+		outer:
+		for (int i = menuEntries.length - 1; i >= 0; i--)
+		{
+			MenuEntry menuEntry = menuEntries[i];
+
+			int menuType = menuEntry.getType();
+			if (menuType == FIRST_OPTION || menuType == SECOND_OPTION || menuType == THIRD_OPTION
+				|| menuType == FOURTH_OPTION || menuType == FIFTH_OPTION || menuType == EXAMINE_ITEM)
 			{
-				Tile tile = tiles[z][x][y];
-				if (tile == null)
+				for (MenuEntryWithCount entryWCount : newEntries)
 				{
-					continue;
-				}
-
-				ItemLayer itemLayer = tile.getItemLayer();
-				if (itemLayer == null)
-				{
-					continue;
-				}
-
-				Node current = itemLayer.getBottom();
-
-				// adds the items on the ground to the ArrayList to be drawn
-				while (current instanceof Item)
-				{
-					final Item item = (Item) current;
-
-					// Continue iteration
-					current = current.getNext();
-
-					// Build ground item
-					final GroundItem groundItem = buildGroundItem(tile, item);
-
-					if (groundItem != null)
+					if (entryWCount.getEntry().equals(menuEntry))
 					{
-						groundItem.setHeight(itemLayer.getHeight());
-						groundItems.add(groundItem);
+						entryWCount.increment();
+						continue outer;
 					}
 				}
 			}
+
+			newEntries.add(new MenuEntryWithCount(menuEntry));
 		}
 
-		// Group ground items together and sort them properly
-		collectedGroundItems.clear();
-		Lists.reverse(groundItems).stream().collect(groundItemMapCollector);
+		Collections.reverse(newEntries);
+
+		client.setMenuEntries(newEntries.stream().map(e ->
+		{
+			final MenuEntry entry = e.getEntry();
+			final int count = e.getCount();
+			if (count > 1)
+			{
+				entry.setTarget(entry.getTarget() + " x " + count);
+			}
+
+			return entry;
+		}).toArray(MenuEntry[]::new));
 	}
 
-	@Nullable
-	private GroundItem buildGroundItem(final Tile tile, final Item item)
+	private void lootReceived(Collection<ItemStack> items, LootType lootType)
+	{
+		for (ItemStack itemStack : items)
+		{
+			WorldPoint location = WorldPoint.fromLocal(client, itemStack.getLocation());
+			GroundItem.GroundItemKey groundItemKey = new GroundItem.GroundItemKey(itemStack.getId(), location);
+			GroundItem groundItem = collectedGroundItems.get(groundItemKey);
+			if (groundItem != null)
+			{
+				groundItem.setLootType(lootType);
+
+				if (config.onlyShowLoot())
+				{
+					notifyHighlightedItem(groundItem);
+				}
+			}
+		}
+	}
+
+	private GroundItem buildGroundItem(final Tile tile, final TileItem item)
 	{
 		// Collect the data for the item
 		final int itemId = item.getId();
 		final ItemComposition itemComposition = itemManager.getItemComposition(itemId);
 		final int realItemId = itemComposition.getNote() != -1 ? itemComposition.getLinkedNoteId() : itemId;
-		final int alchPrice = Math.round(itemComposition.getPrice() * HIGH_ALCHEMY_CONSTANT);
+		final int alchPrice = itemComposition.getHaPrice();
+		final boolean dropped = tile.getWorldLocation().equals(client.getLocalPlayer().getWorldLocation()) && droppedItemQueue.remove(itemId);
 
 		final GroundItem groundItem = GroundItem.builder()
 			.id(itemId)
@@ -306,16 +391,24 @@ public class GroundItemsPlugin extends Plugin
 			.itemId(realItemId)
 			.quantity(item.getQuantity())
 			.name(itemComposition.getName())
-			.haPrice(alchPrice * item.getQuantity())
+			.haPrice(alchPrice)
+			.height(tile.getItemLayer().getHeight())
 			.tradeable(itemComposition.isTradeable())
+			.lootType(dropped ? LootType.DROPPED : LootType.UNKNOWN)
+			.spawnTime(Instant.now())
+			.stackable(itemComposition.isStackable())
 			.build();
 
 
 		// Update item price in case it is coins
 		if (realItemId == COINS)
 		{
-			groundItem.setHaPrice(groundItem.getQuantity());
-			groundItem.setGePrice(groundItem.getQuantity());
+			groundItem.setHaPrice(1);
+			groundItem.setGePrice(1);
+		}
+		else
+		{
+			groundItem.setGePrice(itemManager.getItemPrice(realItemId));
 		}
 
 		return groundItem;
@@ -324,10 +417,10 @@ public class GroundItemsPlugin extends Plugin
 	private void reset()
 	{
 		// gets the hidden items from the text box in the config
-		hiddenItemList = COMMA_SPLITTER.splitToList(config.getHiddenItems());
+		hiddenItemList = Text.fromCSV(config.getHiddenItems());
 
 		// gets the highlighted items from the text box in the config
-		highlightedItemsList = COMMA_SPLITTER.splitToList(config.getHighlightItems());
+		highlightedItemsList = Text.fromCSV(config.getHighlightItems());
 
 		highlightedItems = CacheBuilder.newBuilder()
 			.maximumSize(512L)
@@ -339,100 +432,93 @@ public class GroundItemsPlugin extends Plugin
 			.expireAfterAccess(10, TimeUnit.MINUTES)
 			.build(new WildcardMatchLoader(hiddenItemList));
 
-		dirty = true;
-
 		// Cache colors
-		priceChecks.clear();
+		ImmutableList.Builder<PriceHighlight> priceCheckBuilder = ImmutableList.builder();
 
 		if (config.insaneValuePrice() > 0)
 		{
-			priceChecks.put(config.insaneValuePrice(), config.insaneValueColor());
+			priceCheckBuilder.add(new PriceHighlight(config.insaneValuePrice(), config.insaneValueColor()));
 		}
 
 		if (config.highValuePrice() > 0)
 		{
-			priceChecks.put(config.highValuePrice(), config.highValueColor());
+			priceCheckBuilder.add(new PriceHighlight(config.highValuePrice(), config.highValueColor()));
 		}
 
 		if (config.mediumValuePrice() > 0)
 		{
-			priceChecks.put(config.mediumValuePrice(), config.mediumValueColor());
+			priceCheckBuilder.add(new PriceHighlight(config.mediumValuePrice(), config.mediumValueColor()));
 		}
 
 		if (config.lowValuePrice() > 0)
 		{
-			priceChecks.put(config.lowValuePrice(), config.lowValueColor());
+			priceCheckBuilder.add(new PriceHighlight(config.lowValuePrice(), config.lowValueColor()));
 		}
 
-		if (config.getHighlightOverValue() > 0)
-		{
-			priceChecks.put(config.getHighlightOverValue(), config.highlightedColor());
-		}
+		priceChecks = priceCheckBuilder.build();
 	}
 
 	@Subscribe
 	public void onMenuEntryAdded(MenuEntryAdded event)
 	{
-		if (config.itemHighlightMode() != OVERLAY
-			&& event.getOption().equals("Take")
-			&& event.getType() == MenuAction.GROUND_ITEM_THIRD_OPTION.getId())
+		if (config.itemHighlightMode() != OVERLAY)
 		{
-			int itemId = event.getIdentifier();
-			Region region = client.getRegion();
-			Tile tile = region.getTiles()[client.getPlane()][event.getActionParam0()][event.getActionParam1()];
-			ItemLayer itemLayer = tile.getItemLayer();
-
-			if (itemLayer == null)
+			final boolean telegrabEntry = event.getOption().equals("Cast") && event.getTarget().startsWith(TELEGRAB_TEXT) && event.getType() == CAST_ON_ITEM;
+			if (!(event.getOption().equals("Take") && event.getType() == THIRD_OPTION) && !telegrabEntry)
 			{
 				return;
 			}
 
+			final int itemId = event.getIdentifier();
+			final int sceneX = event.getActionParam0();
+			final int sceneY = event.getActionParam1();
+
 			MenuEntry[] menuEntries = client.getMenuEntries();
 			MenuEntry lastEntry = menuEntries[menuEntries.length - 1];
 
-			int quantity = 1;
-			Node current = itemLayer.getBottom();
+			final WorldPoint worldPoint = WorldPoint.fromScene(client, sceneX, sceneY, client.getPlane());
+			GroundItem.GroundItemKey groundItemKey = new GroundItem.GroundItemKey(itemId, worldPoint);
+			GroundItem groundItem = collectedGroundItems.get(groundItemKey);
+			int quantity = groundItem.getQuantity();
 
-			while (current instanceof Item)
-			{
-				Item item = (Item) current;
-				if (item.getId() == itemId)
-				{
-					quantity = item.getQuantity();
-				}
-				current = current.getNext();
-			}
-
-			final ItemComposition itemComposition = itemManager.getItemComposition(itemId);
-			final int realItemId = itemComposition.getNote() != -1 ? itemComposition.getLinkedNoteId() : itemComposition.getId();
-			final ItemPrice itemPrice = itemManager.getItemPrice(realItemId);
-			final int price = itemPrice == null ? itemComposition.getPrice() : itemPrice.getPrice();
-			final int haPrice = Math.round(itemComposition.getPrice() * HIGH_ALCHEMY_CONSTANT) * quantity;
-			final int gePrice = quantity * price;
-			final Color hidden = getHidden(itemComposition.getName(), gePrice, haPrice, itemComposition.isTradeable());
-			final Color highlighted = getHighlighted(itemComposition.getName(), gePrice, haPrice);
+			final int gePrice = groundItem.getGePrice();
+			final int haPrice = groundItem.getHaPrice();
+			final Color hidden = getHidden(new NamedQuantity(groundItem.getName(), quantity), gePrice, haPrice, groundItem.isTradeable());
+			final Color highlighted = getHighlighted(new NamedQuantity(groundItem.getName(), quantity), gePrice, haPrice);
 			final Color color = getItemColor(highlighted, hidden);
 			final boolean canBeRecolored = highlighted != null || (hidden != null && config.recolorMenuHiddenItems());
 
 			if (color != null && canBeRecolored && !color.equals(config.defaultColor()))
 			{
-				String hexColor = Integer.toHexString(color.getRGB() & 0xFFFFFF);
-				String colTag = "<col=" + hexColor + ">";
 				final MenuHighlightMode mode = config.menuHighlightMode();
 
 				if (mode == BOTH || mode == OPTION)
 				{
-					lastEntry.setOption(colTag + "Take");
+					final String optionText = telegrabEntry ? "Cast" : "Take";
+					lastEntry.setOption(ColorUtil.prependColorTag(optionText, color));
 				}
 
 				if (mode == BOTH || mode == NAME)
 				{
-					String target = lastEntry.getTarget().substring(lastEntry.getTarget().indexOf(">") + 1);
-					lastEntry.setTarget(colTag + target);
+					String target = lastEntry.getTarget();
+
+					if (telegrabEntry)
+					{
+						target = target.substring(TELEGRAB_TEXT.length());
+					}
+
+					target = ColorUtil.prependColorTag(target.substring(target.indexOf('>') + 1), color);
+
+					if (telegrabEntry)
+					{
+						target = TELEGRAB_TEXT + target;
+					}
+
+					lastEntry.setTarget(target);
 				}
 			}
 
-			if (config.showMenuItemQuantities() && itemComposition.isStackable() && quantity > 1)
+			if (config.showMenuItemQuantities() && groundItem.isStackable() && quantity > 1)
 			{
 				lastEntry.setTarget(lastEntry.getTarget() + " (" + quantity + ")");
 			}
@@ -443,8 +529,8 @@ public class GroundItemsPlugin extends Plugin
 
 	void updateList(String item, boolean hiddenList)
 	{
-		final Set<String> hiddenItemSet = new HashSet<>(hiddenItemList);
-		final Set<String> highlightedItemSet = new HashSet<>(highlightedItemsList);
+		final List<String> hiddenItemSet = new ArrayList<>(hiddenItemList);
+		final List<String> highlightedItemSet = new ArrayList<>(highlightedItemsList);
 
 		if (hiddenList)
 		{
@@ -455,18 +541,18 @@ public class GroundItemsPlugin extends Plugin
 			hiddenItemSet.removeIf(item::equalsIgnoreCase);
 		}
 
-		final Set<String> items = hiddenList ? hiddenItemSet : highlightedItemSet;
+		final List<String> items = hiddenList ? hiddenItemSet : highlightedItemSet;
 
 		if (!items.removeIf(item::equalsIgnoreCase))
 		{
 			items.add(item);
 		}
 
-		config.setHiddenItems(COMMA_JOINER.join(hiddenItemSet));
-		config.setHighlightedItem(COMMA_JOINER.join(highlightedItemSet));
+		config.setHiddenItems(Text.toCSV(hiddenItemSet));
+		config.setHighlightedItem(Text.toCSV(highlightedItemSet));
 	}
 
-	Color getHighlighted(String item, int gePrice, int haPrice)
+	Color getHighlighted(NamedQuantity item, int gePrice, int haPrice)
 	{
 		if (TRUE.equals(highlightedItems.getUnchecked(item)))
 		{
@@ -479,18 +565,19 @@ public class GroundItemsPlugin extends Plugin
 			return null;
 		}
 
-		for (Map.Entry<Integer, Color> entry : priceChecks.entrySet())
+		final int price = getValueByMode(gePrice, haPrice);
+		for (PriceHighlight highlight : priceChecks)
 		{
-			if (gePrice > entry.getKey() || haPrice > entry.getKey())
+			if (price > highlight.getPrice())
 			{
-				return entry.getValue();
+				return highlight.getColor();
 			}
 		}
 
 		return null;
 	}
 
-	Color getHidden(String item, int gePrice, int haPrice, boolean isTradeable)
+	Color getHidden(NamedQuantity item, int gePrice, int haPrice, boolean isTradeable)
 	{
 		final boolean isExplicitHidden = TRUE.equals(hiddenItems.getUnchecked(item));
 		final boolean isExplicitHighlight = TRUE.equals(highlightedItems.getUnchecked(item));
@@ -525,6 +612,80 @@ public class GroundItemsPlugin extends Plugin
 		if (!focusChanged.isFocused())
 		{
 			setHotKeyPressed(false);
+		}
+	}
+
+	private void notifyHighlightedItem(GroundItem item)
+	{
+		final boolean shouldNotifyHighlighted = config.notifyHighlightedDrops() &&
+			TRUE.equals(highlightedItems.getUnchecked(new NamedQuantity(item)));
+
+		final boolean shouldNotifyTier = config.notifyTier() != HighlightTier.OFF &&
+			getValueByMode(item.getGePrice(), item.getHaPrice()) > config.notifyTier().getValueFromTier(config) &&
+			FALSE.equals(hiddenItems.getUnchecked(new NamedQuantity(item)));
+
+		final String dropType;
+		if (shouldNotifyHighlighted)
+		{
+			dropType = "highlighted";
+		}
+		else if (shouldNotifyTier)
+		{
+			dropType = "valuable";
+		}
+		else
+		{
+			return;
+		}
+
+		final Player local = client.getLocalPlayer();
+		final StringBuilder notificationStringBuilder = new StringBuilder()
+			.append("[")
+			.append(local.getName())
+			.append("] received a ")
+			.append(dropType)
+			.append(" drop: ")
+			.append(item.getName());
+
+		if (item.getQuantity() > 1)
+		{
+			if (item.getQuantity() >= MAX_QUANTITY)
+			{
+				notificationStringBuilder.append(" (Lots!)");
+			}
+			else
+			{
+				notificationStringBuilder.append(" (")
+					.append(QuantityFormatter.quantityToStackSize(item.getQuantity()))
+					.append(")");
+			}
+		}
+		
+		notifier.notify(notificationStringBuilder.toString());
+	}
+
+	private int getValueByMode(int gePrice, int haPrice)
+	{
+		switch (config.valueCalculationMode())
+		{
+			case GE:
+				return gePrice;
+			case HA:
+				return haPrice;
+			default: // Highest
+				return Math.max(gePrice, haPrice);
+		}
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked menuOptionClicked)
+	{
+		if (menuOptionClicked.getMenuAction() == MenuAction.ITEM_DROP)
+		{
+			int itemId = menuOptionClicked.getId();
+			// Keep a queue of recently dropped items to better detect
+			// item spawns that are drops
+			droppedItemQueue.add(itemId);
 		}
 	}
 }

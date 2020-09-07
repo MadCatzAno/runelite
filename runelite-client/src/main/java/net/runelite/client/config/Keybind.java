@@ -28,6 +28,7 @@ import com.google.common.collect.BiMap;
 import com.google.common.collect.ImmutableBiMap;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
+import javax.annotation.Nullable;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 
@@ -39,15 +40,15 @@ import lombok.Getter;
 @EqualsAndHashCode
 public class Keybind
 {
-	private static final BiMap<Integer, Integer> modifierToKeyCode = new ImmutableBiMap.Builder<Integer, Integer>()
+	private static final BiMap<Integer, Integer> MODIFIER_TO_KEY_CODE = new ImmutableBiMap.Builder<Integer, Integer>()
 		.put(InputEvent.CTRL_DOWN_MASK, KeyEvent.VK_CONTROL)
 		.put(InputEvent.ALT_DOWN_MASK, KeyEvent.VK_ALT)
 		.put(InputEvent.SHIFT_DOWN_MASK, KeyEvent.VK_SHIFT)
 		.put(InputEvent.META_DOWN_MASK, KeyEvent.VK_META)
 		.build();
 
-	// Bitmask of all supported modifers
-	private static final int KEYBOARD_MODIFIER_MASK = modifierToKeyCode.keySet().stream()
+	// Bitmask of all supported modifiers
+	private static final int KEYBOARD_MODIFIER_MASK = MODIFIER_TO_KEY_CODE.keySet().stream()
 		.reduce((a, b) -> a | b).get();
 
 	public static final Keybind NOT_SET = new Keybind(KeyEvent.VK_UNDEFINED, 0);
@@ -59,21 +60,31 @@ public class Keybind
 	private final int keyCode;
 	private final int modifiers;
 
-	public Keybind(int keyCode, int modifiers)
+	protected Keybind(int keyCode, int modifiers, boolean ignoreModifiers)
 	{
 		modifiers &= KEYBOARD_MODIFIER_MASK;
 
 		// If the keybind is just modifiers we don't want the keyCode to contain the modifier too,
-		// becasue this breaks if you do the keycode backwards
-		Integer mf = modifierToKeyCode.inverse().get(keyCode);
+		// because this breaks if you do the keycode backwards
+		Integer mf = getModifierForKeyCode(keyCode);
 		if (mf != null)
 		{
 			assert (modifiers & mf) != 0;
 			keyCode = KeyEvent.VK_UNDEFINED;
 		}
 
+		if (ignoreModifiers && keyCode != KeyEvent.VK_UNDEFINED)
+		{
+			modifiers = 0;
+		}
+
 		this.keyCode = keyCode;
 		this.modifiers = modifiers;
+	}
+
+	public Keybind(int keyCode, int modifiers)
+	{
+		this(keyCode, modifiers, false);
 	}
 
 	/**
@@ -94,6 +105,11 @@ public class Keybind
 	 */
 	public boolean matches(KeyEvent e)
 	{
+		return matches(e, false);
+	}
+
+	protected boolean matches(KeyEvent e, boolean ignoreModifiers)
+	{
 		if (NOT_SET.equals(this))
 		{
 			return false;
@@ -102,11 +118,21 @@ public class Keybind
 		int keyCode = e.getExtendedKeyCode();
 		int modifiers = e.getModifiersEx() & KEYBOARD_MODIFIER_MASK;
 
-		Integer mf = modifierToKeyCode.inverse().get(keyCode);
+		Integer mf = getModifierForKeyCode(keyCode);
 		if (mf != null)
 		{
 			modifiers |= mf;
 			keyCode = KeyEvent.VK_UNDEFINED;
+		}
+
+		if (e.getID() == KeyEvent.KEY_RELEASED && keyCode != KeyEvent.VK_UNDEFINED)
+		{
+			return this.keyCode == keyCode;
+		}
+
+		if (ignoreModifiers && keyCode != KeyEvent.VK_UNDEFINED)
+		{
+			return this.keyCode == keyCode;
 		}
 
 		return this.keyCode == keyCode && this.modifiers == modifiers;
@@ -176,5 +202,11 @@ public class Keybind
 			buf.setLength(buf.length() - 1); // remove trailing '+'
 		}
 		return buf.toString();
+	}
+
+	@Nullable
+	public static Integer getModifierForKeyCode(int keyCode)
+	{
+		return MODIFIER_TO_KEY_CODE.inverse().get(keyCode);
 	}
 }

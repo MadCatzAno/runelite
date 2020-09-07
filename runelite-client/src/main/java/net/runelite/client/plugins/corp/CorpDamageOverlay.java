@@ -30,34 +30,38 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import javax.inject.Inject;
 import net.runelite.api.Client;
+import static net.runelite.api.MenuAction.RUNELITE_OVERLAY_CONFIG;
 import net.runelite.api.NPC;
 import net.runelite.api.Varbits;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetID;
-import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
+import static net.runelite.client.ui.overlay.OverlayManager.OPTION_CONFIGURE;
+import net.runelite.client.ui.overlay.OverlayMenuEntry;
+import net.runelite.client.ui.overlay.OverlayPanel;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.OverlayPriority;
 import net.runelite.client.ui.overlay.components.ComponentConstants;
 import net.runelite.client.ui.overlay.components.LineComponent;
-import net.runelite.client.ui.overlay.components.PanelComponent;
 
-class CorpDamageOverlay extends Overlay
+class CorpDamageOverlay extends OverlayPanel
 {
 	private final Client client;
 	private final CorpPlugin corpPlugin;
-
-	private final PanelComponent panelComponent = new PanelComponent();
+	private final CorpConfig config;
 
 	@Inject
-	private CorpDamageOverlay(Client client, CorpPlugin corpPlugin)
+	private CorpDamageOverlay(Client client, CorpPlugin corpPlugin, CorpConfig config)
 	{
+		super(corpPlugin);
 		setPosition(OverlayPosition.TOP_LEFT);
 		setLayer(OverlayLayer.UNDER_WIDGETS);
 		setPriority(OverlayPriority.LOW);
 		this.client = client;
 		this.corpPlugin = corpPlugin;
+		this.config = config;
+		getMenuEntries().add(new OverlayMenuEntry(RUNELITE_OVERLAY_CONFIG, OPTION_CONFIGURE, "Corp overlay"));
 	}
 
 	@Override
@@ -81,8 +85,6 @@ class CorpDamageOverlay extends Overlay
 
 		// estimate how much damage is required for kill based on number of players
 		int damageForKill = players != 0 ? totalDamage / players : 0;
-
-		panelComponent.getChildren().clear();
 
 		NPC core = corpPlugin.getCore();
 		if (core != null)
@@ -114,17 +116,20 @@ class CorpDamageOverlay extends Overlay
 			}
 		}
 
-		panelComponent.getChildren().add(LineComponent.builder()
-			.left("Your damage")
-			.right(Integer.toString(myDamage))
-			.rightColor(damageForKill > 0 && myDamage >= damageForKill ? Color.GREEN : Color.RED)
-			.build());
+		if (config.showDamage())
+		{
+			panelComponent.getChildren().add(LineComponent.builder()
+				.left("Your damage")
+				.right(Integer.toString(myDamage))
+				.rightColor(damageForKill > 0 && myDamage >= damageForKill ? Color.GREEN : Color.RED)
+				.build());
 
-		panelComponent.getChildren().add(LineComponent.builder()
-			.left("Total damage")
-			.right(Integer.toString(totalDamage))
-			.build());
+			panelComponent.getChildren().add(LineComponent.builder()
+				.left("Total damage")
+				.right(Integer.toString(totalDamage))
+				.build());
+		}
 
-		return panelComponent.render(graphics);
+		return super.render(graphics);
 	}
 }

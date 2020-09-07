@@ -25,7 +25,7 @@
  */
 package net.runelite.client.plugins.puzzlesolver;
 
-import java.util.HashMap;
+import com.google.common.collect.ImmutableMap;
 import java.util.Map;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -123,7 +123,7 @@ enum VarrockMuseumAnswer
 
 	CAMEL_1("What is produced by feeding chilli to a camel?", "Toxic dung."),
 	CAMEL_2("If an ugthanki has one, how many does a bactrian have?", "Two."),
-	CAMEL_3("Camels:  herbivore, carnivore or omnivore?", "Omnivore."),
+	CAMEL_3("Camels: herbivore, carnivore or omnivore?", "Omnivore."),
 	CAMEL_4("What is the usual mood for a camel?", "Annoyed."),
 	CAMEL_5("Where would you find an ugthanki?", "Al Kharid."),
 	CAMEL_6("Which camel byproduct is known to be very nutritious?", "Milk."),
@@ -135,14 +135,18 @@ enum VarrockMuseumAnswer
 	LEECH_5("What is special about Morytanian leeches?", "They attack by jumping."),
 	LEECH_6("How does a leech change when it feeds?", "It doubles in size.");
 
-	private static final Map<String, String> MATCHES = new HashMap<>();
+	private static final Map<String, String> MATCHES;
 
 	static
 	{
+		ImmutableMap.Builder<String, String> builder = new ImmutableMap.Builder<>();
+
 		for (VarrockMuseumAnswer varrockMuseumAnswer : VarrockMuseumAnswer.values())
 		{
-			MATCHES.put(varrockMuseumAnswer.question, varrockMuseumAnswer.answer);
+			builder.put(varrockMuseumAnswer.question, varrockMuseumAnswer.answer);
 		}
+
+		MATCHES = builder.build();
 	}
 
 	private final String question;
